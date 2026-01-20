@@ -38,6 +38,7 @@ test/output/
 tmp/
 temp/
 *.tmp
+_codeql_detected_source_root
 
 # Python
 __pycache__/
