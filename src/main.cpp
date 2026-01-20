@@ -31,6 +31,12 @@
 #define WHEEL_CIRCUMFERENCE_CM 200.0  // Circumference in cm, adjust based on your setup
 #define PULSES_PER_REVOLUTION 1       // Number of pulses per wheel revolution
 
+// Speed calculation constants
+#define CM_TO_KM_FACTOR 100000.0      // Convert cm to km (100,000 cm = 1 km)
+#define MS_TO_HOUR_FACTOR 3600000.0   // Convert ms to hours (3,600,000 ms = 1 hour)
+#define SPEED_FILTER_ALPHA 0.7        // Weight for new speed reading (0.0-1.0)
+#define SPEED_FILTER_BETA 0.3         // Weight for previous speed reading (0.0-1.0)
+
 // Speed calculation variables
 volatile unsigned long lastPulseTime = 0;
 volatile unsigned long pulseInterval = 0;
@@ -85,8 +91,11 @@ class ControlPointCallbacks: public NimBLECharacteristicCallbacks {
 };
 
 // Interrupt service routine for speed sensor
+// Note: Keep this ISR minimal - just capture timing data
 void IRAM_ATTR speedSensorISR() {
-    unsigned long currentTime = millis();
+    // Using micros() for more precise timing (1us resolution vs 1ms for millis)
+    // This is safe in ISR as micros() uses hardware timer
+    unsigned long currentTime = micros();
     pulseInterval = currentTime - lastPulseTime;
     lastPulseTime = currentTime;
     pulseCount++;
@@ -94,27 +103,30 @@ void IRAM_ATTR speedSensorISR() {
 
 // Calculate speed from pulse interval
 void updateSpeed() {
-    unsigned long currentTime = millis();
+    unsigned long currentTime = micros();
+    
+    // Convert timeout to microseconds for comparison
+    unsigned long timeoutMicros = SPEED_TIMEOUT * 1000UL;
     
     // Check for timeout (treadmill stopped)
-    if (currentTime - lastPulseTime > SPEED_TIMEOUT) {
+    if (currentTime - lastPulseTime > timeoutMicros) {
         currentSpeed = 0.0;
         pulseInterval = 0;
         return;
     }
     
     // Calculate speed if we have valid pulse data
-    if (pulseInterval > 0 && pulseInterval < SPEED_TIMEOUT) {
+    if (pulseInterval > 0 && pulseInterval < timeoutMicros) {
         // Speed = (distance per pulse / time per pulse) converted to km/h
         // distance per pulse = WHEEL_CIRCUMFERENCE_CM / PULSES_PER_REVOLUTION (in cm)
-        // time per pulse = pulseInterval (in ms)
-        // speed (km/h) = (distance_cm / 100000) / (time_ms / 3600000)
+        // time per pulse = pulseInterval (in microseconds)
+        // speed (km/h) = (distance_cm / CM_TO_KM_FACTOR) / (time_us / (MS_TO_HOUR_FACTOR * 1000))
         float distancePerPulse = WHEEL_CIRCUMFERENCE_CM / PULSES_PER_REVOLUTION;
-        currentSpeed = (distancePerPulse / 100000.0) / (pulseInterval / 3600000.0);
+        currentSpeed = (distancePerPulse / CM_TO_KM_FACTOR) / (pulseInterval / (MS_TO_HOUR_FACTOR * 1000.0));
         
-        // Apply some filtering to smooth speed readings
+        // Apply exponential moving average filter to smooth speed readings
         static float lastSpeed = 0.0;
-        currentSpeed = 0.7 * currentSpeed + 0.3 * lastSpeed;
+        currentSpeed = SPEED_FILTER_ALPHA * currentSpeed + SPEED_FILTER_BETA * lastSpeed;
         lastSpeed = currentSpeed;
     }
 }
